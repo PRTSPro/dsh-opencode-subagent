@@ -29,7 +29,7 @@ Directly configuring the free model as a normal OpenAI-compatible DSH provider i
 ### Prerequisites
 
 - A working DSH installation with the Agent Teams / subagents machinery (this is a Host bundle).
-- [OpenCode CLI](https://opencode.ai) installed and logged in, so that `opencode run --model opencode/hy4-flash-free "hi"` works from a terminal.
+- [OpenCode CLI](https://opencode.ai) installed and logged in, so that `opencode run --model opencode/deepseek-v4.1-flash-free "hi"` works from a terminal.
 - The DSH profile should have the `jobs` stack enabled for the live progress view: `jobs`, `tool-jobs`, `job-controller`, `ui-jobs`. Without it, the plugin still works but falls back to a plain run with no visible job row.
 - Node.js that DSH supports (the plugin itself uses only Node built-ins).
 
@@ -75,7 +75,7 @@ Passed via the bundle `config` in `cordis.patch.yml`.
 | `providerName` | `opencode` | Provider name registered into `ctx.subagents`. |
 | `cliPath` | auto | OpenCode CLI path. On Windows it auto-detects `%APPDATA%\npm\node_modules\@opencode\cli\bin\opencode.exe`; otherwise `opencode` from `PATH`. |
 | `providerID` | `opencode` | Provider segment of `--model`. |
-| `model` | `hy4-flash-free` | Model segment of `--model` (any OpenCode model id works, free or paid). |
+| `model` | `deepseek-v4.1-flash-free` | Model segment of `--model` (any OpenCode model id works, free or paid). |
 | `sessionStrategy` | `default` | `--session` policy: `default` = do not pass (reuse OpenCode's default session, free-tier friendly); `stable` = fixed id from `sha256(label+cwd)`; `fresh` = new random id each run. |
 | `cwd` | empty | Fallback working directory when the request does not provide one. |
 | `auto` | `true` | Whether to pass `--auto` (allow tool execution without approval). |
@@ -120,7 +120,7 @@ OpenCode 的免费聊天模型**只能在真正的 OpenCode 运行时里使用**
 ### 前置条件
 
 - 可用的 DSH 安装（含 subagents / Agent Teams 机制，这是 Host bundle）。
-- 已安装并登录 [OpenCode CLI](https://opencode.ai)，能在终端里跑通 `opencode run --model opencode/hy4-flash-free "hi"`。
+- 已安装并登录 [OpenCode CLI](https://opencode.ai)，能在终端里跑通 `opencode run --model opencode/deepseek-v4.1-flash-free "hi"`。
 - DSH profile 建议启用 `jobs` 全套以获得实时进度视图：`jobs`、`tool-jobs`、`job-controller`、`ui-jobs`。未启用也能用，只是没有可见的 job 行。
 - DSH 支持的 Node.js（插件本身只用 Node 内置模块）。
 
@@ -166,7 +166,7 @@ plugin_manager install_bundle --target <本仓库路径>
 | `providerName` | `opencode` | 注册到 `ctx.subagents` 的 provider 名 |
 | `cliPath` | 自动探测 | OpenCode CLI 路径；Windows 自动探测 `%APPDATA%\npm\node_modules\@opencode\cli\bin\opencode.exe`，否则用 `PATH` 里的 `opencode` |
 | `providerID` | `opencode` | `--model` 的 provider 段 |
-| `model` | `hy4-flash-free` | `--model` 的模型 ID（任意 OpenCode 模型均可，免费或付费） |
+| `model` | `deepseek-v4.1-flash-free` | `--model` 的模型 ID（任意 OpenCode 模型均可，免费或付费） |
 | `sessionStrategy` | `default` | `--session` 策略：`default` 不传（复用默认会话，对免费池友好）；`stable` 用 `sha256(label+cwd)` 前 32 位固定 ID；`fresh` 每次新建随机 ID |
 | `cwd` | 空 | 请求未提供工作目录时的兜底目录 |
 | `auto` | `true` | 是否传 `--auto`（允许免确认执行工具） |

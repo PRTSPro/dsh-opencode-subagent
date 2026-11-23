@@ -12,7 +12,7 @@ const DEFAULTS = {
   providerName: "opencode",
   cliPath: "",
   providerID: "opencode",
-  model: "hy4-flash-free",
+  model: "deepseek-v4.1-flash-free",
   // "default" reuses OpenCode's own session (proven free-tier-friendly),
   // "stable" hashes label+cwd into one reusable id, "fresh" creates a new id per run.
   sessionStrategy: "default",
