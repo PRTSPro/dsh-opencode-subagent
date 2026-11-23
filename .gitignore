@@ -1,0 +1,13 @@
+# Runtime / local state
+node_modules/
+*.log
+*.tmp
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

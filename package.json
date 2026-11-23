@@ -1,0 +1,46 @@
+{
+  "name": "@local/dsh-opencode-subagent",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness native SubagentProvider powered by the OpenCode CLI and its free models",
+  "icon": "./icon.svg",
+  "type": "module",
+  "main": "index.mjs",
+  "license": "MIT",
+  "author": "PRTSPro",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PRTSPro/dsh-opencode-subagent.git"
+  },
+  "homepage": "https://github.com/PRTSPro/dsh-opencode-subagent#readme",
+  "bugs": {
+    "url": "https://github.com/PRTSPro/dsh-opencode-subagent/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "bundle",
+    "opencode",
+    "subagent",
+    "subagent-provider"
+  ],
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "icon.svg",
+    "index.mjs",
+    "locale/",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

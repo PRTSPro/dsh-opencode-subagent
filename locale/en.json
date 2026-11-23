@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "OpenCode Subagent",
+    "description": "Native DeepSeek Harness subagent provider backed by the OpenCode CLI, running OpenCode free models in real OpenCode sessions with tool use and multi-step execution."
+  }
+}

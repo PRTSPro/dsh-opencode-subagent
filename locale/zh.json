@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "OpenCode 子智能体",
+    "description": "基于 OpenCode CLI 的 DeepSeek Harness 原生子智能体 provider，在真实 OpenCode 会话中运行 OpenCode 免费模型，支持工具调用与多步骤执行。"
+  }
+}
