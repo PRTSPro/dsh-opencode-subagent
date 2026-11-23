@@ -1,12 +1,15 @@
-import { spawn } from "node:child_process";
-import { accessSync, constants, existsSync, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 const PREFIX = "opencode-subagent";
 const MAX_DIAGNOSTIC_BYTES = 4096;
 const MAX_JOB_LINE_CHARS = 2000;
 const JOB_KIND = "opencode";
+const PARENT_PROBE_INTERVAL_MS = 2000; // parent-death sentinel cadence
+const LEDGER_DIRNAME = "_state/opencode_jobs";
 
 const DEFAULTS = {
   providerName: "opencode",
@@ -166,6 +169,69 @@ function describeOpenCodeEvent(event) {
   return null;
 }
 
+/** Sanitize an untrusted id into a single safe path segment. */
+function safeSegment(value) {
+  return String(value ?? "default").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120) || "default";
+}
+
+/**
+ * Observer ledger location, chosen so agent-visible cwd is never polluted.
+ * Priority: DSH-provided session dir -> os.tmpdir() scoped by DSH_SESSION_ID.
+ * (This host exposes DSH_SESSION_ID/DSH_HOME but no DSH_SESSION_DIR, so the
+ * tmpdir branch is the live path; see delivery report.)
+ */
+function resolveLedgerDir(request) {
+  const envDir = process.env.DSH_SESSION_DIR;
+  if (envDir && isAbsolute(envDir)) return join(envDir, LEDGER_DIRNAME);
+  const sessionKey = process.env.DSH_SESSION_ID || request?.parent?.session?.id || "default";
+  return join(tmpdir(), PREFIX, safeSegment(sessionKey), LEDGER_DIRNAME);
+}
+
+/** Append one JSON line. Ledger is observer-only: never break a run on I/O error. */
+function ledgerAppend(dir, record) {
+  if (!dir) return undefined;
+  try {
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `jobs-${new Date().toISOString().slice(0, 10)}.jsonl`);
+    appendFileSync(file, JSON.stringify({ ts: new Date().toISOString(), ...record }) + "\n", "utf8");
+    return file;
+  } catch {
+    return undefined;
+  }
+}
+
+// Process-level orphan guard. One shared hook set; one kill callback per live
+// child. Exit handlers must be synchronous, so killChild supports a sync mode.
+const activeChildren = new Set();
+let exitHooksInstalled = false;
+function installExitHooks() {
+  if (exitHooksInstalled) return;
+  exitHooksInstalled = true;
+  const killAll = ({ sync = false } = {}) => {
+    for (const kill of [...activeChildren]) {
+      try {
+        kill({ sync });
+      } catch {
+        // One bad child must not block the others.
+      }
+    }
+  };
+  // 'exit' cannot be async: use synchronous taskkill.
+  process.once("exit", () => killAll({ sync: true }));
+  // Installing a signal listener suppresses Node's default termination, so
+  // re-raise after synchronous cleanup to preserve normal shutdown semantics.
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+    process.once(signal, () => {
+      killAll({ sync: true });
+      try {
+        process.kill(process.pid, signal);
+      } catch {
+        process.exit(signal === "SIGTERM" ? 143 : signal === "SIGINT" ? 130 : 129);
+      }
+    });
+  }
+}
+
 class OpenCodeCliProvider {
   constructor(config, logger, ctx) {
     this.name = config.providerName;
@@ -216,6 +282,18 @@ class OpenCodeCliProvider {
     // --- job visibility (observer-only, never fed back into the model) -------
     let jobHandle;
     let killChildRef;
+    let runPid;
+    const ledgerDir = resolveLedgerDir(request);
+    const ledgerMeta = {
+      runId,
+      pid: null,
+      parentSessionId: request.parent?.session?.id ?? null,
+      label,
+      status: "started",
+      startedAt: new Date().toISOString(),
+    };
+    let jobId = null;
+    let ledgerStarted = false;
     const emitJob = (text, channel = "log") => {
       if (!jobHandle || !text) return;
       try {
@@ -234,6 +312,17 @@ class OpenCodeCliProvider {
     };
     let resolveJobDone;
     const jobDone = new Promise(resolve => { resolveJobDone = resolve; });
+    // Mark the observer ledger with the terminal status. This is the second
+    // (status) line paired with the "started" line written after jobs.start().
+    const recordLedgerStatus = status => {
+      ledgerAppend(ledgerDir, {
+        ...ledgerMeta,
+        jobId,
+        pid: runPid ?? ledgerMeta.pid,
+        status,
+        finishedAt: new Date().toISOString(),
+      });
+    };
     const settleJob = result => {
       if (!resolveJobDone) return;
       const status = result?.stopReason === "aborted" ? "killed"
@@ -241,6 +330,7 @@ class OpenCodeCliProvider {
       const detail = result?.diagnostic
         ? String(result.diagnostic).slice(0, 500)
         : undefined;
+      recordLedgerStatus(status);
       resolveJobDone(detail ? { status, detail } : { status });
       resolveJobDone = undefined;
     };
@@ -255,14 +345,24 @@ class OpenCodeCliProvider {
       let cancelled = false;
       let timedOut = false;
       let timer;
+      let sentinelTimer;
 
+      // detached puts the child in its own process group (Windows: new process
+      // group) so it is not tied to the parent console; stdio pipes stay open
+      // for event streaming. The whole tree is still killed explicitly below.
       const child = spawn(cliPath, args, {
         cwd,
         windowsHide: true,
+        detached: true,
         stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env },
       });
       const pid = child.pid;
+      runPid = pid;
+      ledgerMeta.pid = pid;
+      // Capture the parent pid inside launch, right after spawn (per task).
+      // The liveness sentinel probes it with process.kill(ppid, 0).
+      const ppid = process.ppid;
       killChildRef = killChild;
 
       const closePromise = new Promise(resolve => {
@@ -273,7 +373,7 @@ class OpenCodeCliProvider {
         });
       });
 
-      function killChild() {
+      function killChild({ sync = false } = {}) {
         if (!pid) return;
         try {
           child.kill();
@@ -281,18 +381,42 @@ class OpenCodeCliProvider {
           // The child may already be gone; teardown still awaits `close`.
         }
         if (process.platform === "win32") {
+          const taskkillArgs = ["/PID", String(pid), "/T", "/F"];
+          if (sync) {
+            // 'exit' and signal hooks cannot await: use synchronous tree kill.
+            try {
+              spawnSync("taskkill", taskkillArgs, {
+                windowsHide: true,
+                stdio: "ignore",
+                shell: false,
+              });
+            } catch {
+              // Best effort only.
+            }
+          } else {
+            try {
+              const killer = spawn("taskkill", taskkillArgs, {
+                windowsHide: true,
+                stdio: "ignore",
+                shell: false,
+              });
+              killer.once("error", () => {});
+            } catch {
+              // Best effort only.
+            }
+          }
+        } else if (pid > 0) {
+          // POSIX: detached child is a process-group leader; kill the group.
           try {
-            const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
-              windowsHide: true,
-              stdio: "ignore",
-              shell: false,
-            });
-            killer.once("error", () => {});
+            process.kill(-pid, "SIGKILL");
           } catch {
             // Best effort only.
           }
         }
       }
+      // Register with the shared process-level orphan guard.
+      activeChildren.add(killChild);
+      installExitHooks();
 
       timer = setTimeout(() => {
         timedOut = true;
@@ -300,6 +424,40 @@ class OpenCodeCliProvider {
         killChild();
       }, cfg.runTimeoutMs);
       timer.unref?.();
+
+      // Parent-death sentinel: probe process.ppid every 2s. If the baseline
+      // probe already fails, process.ppid is unreliable on this host and we
+      // fall back to the process 'exit'/signal hooks only (no false positives).
+      let sentinelReliable = true;
+      try {
+        process.kill(ppid, 0);
+      } catch {
+        sentinelReliable = false;
+      }
+      let parentMisses = 0;
+      if (sentinelReliable) {
+        sentinelTimer = setInterval(() => {
+          let alive = true;
+          try {
+            process.kill(ppid, 0);
+          } catch {
+            alive = false;
+          }
+          if (alive) {
+            parentMisses = 0;
+            return;
+          }
+          // Require two consecutive misses (~4s) to avoid transient races.
+          parentMisses += 1;
+          if (parentMisses < 2) return;
+          diag.push("parent process gone; killing child tree");
+          killChild();
+          try { setProgress("killed"); } catch { /* best effort */ }
+          try { settleJob({ stopReason: "aborted" }); } catch { /* best effort */ }
+          void teardown();
+        }, PARENT_PROBE_INTERVAL_MS);
+        sentinelTimer.unref?.();
+      }
 
       let stdoutBuffer = "";
       child.stdout?.setEncoding("utf8");
@@ -389,15 +547,26 @@ class OpenCodeCliProvider {
 
       const result = settleRunResult();
       result.then(
-        value => settleJob(value),
-        error => settleJob({ stopReason: "error", diagnostic: String(error), output: [] }),
+        value => { settleJob(value); void teardown(); },
+        error => {
+          settleJob({ stopReason: "error", diagnostic: String(error), output: [] });
+          void teardown();
+        },
       );
 
       let teardownPromise;
       const teardown = () => {
         if (teardownPromise) return teardownPromise;
+        // Stop probing and unregister synchronously (idempotent), even if the
+        // async body still has to await the child's close below. Unregistering
+        // prevents a recycled pid from being killed by a later exit hook.
+        clearTimeout(timer);
+        if (sentinelTimer) {
+          clearInterval(sentinelTimer);
+          sentinelTimer = undefined;
+        }
+        activeChildren.delete(killChild);
         teardownPromise = (async () => {
-          clearTimeout(timer);
           if (child.exitCode === null && child.signalCode === null) {
             killChild();
             let raceTimer;
@@ -432,6 +601,19 @@ class OpenCodeCliProvider {
       };
     };
 
+    // Write the paired "started" ledger line exactly once, after both jobId
+    // and pid are known (jobs.start invokes run() synchronously).
+    const writeLedgerStarted = () => {
+      if (ledgerStarted) return;
+      ledgerStarted = true;
+      ledgerAppend(ledgerDir, {
+        ...ledgerMeta,
+        jobId,
+        pid: runPid ?? null,
+        status: "started",
+      });
+    };
+
     // Register a visible job when the host provides the jobs service. The job
     // row lives in the session header (live progress/output/kill) and is
     // observer-only, so the parent model is not polluted by step-by-step logs.
@@ -440,7 +622,10 @@ class OpenCodeCliProvider {
     if (jobs) {
       const owner = request.parent?.session?.id;
       try {
-        jobs.start({
+        // jobs.start synchronously invokes run(job) and returns the JobId.
+        // Keep it: the original code discarded it, so the job was invisible to
+        // ctx.jobs.wait/list and could not be correlated in the ledger.
+        jobId = jobs.start({
           kind: JOB_KIND,
           label: `OpenCode · ${label}`,
           ...(owner ? { owner } : {}),
@@ -471,6 +656,11 @@ class OpenCodeCliProvider {
     } else {
       run = launch();
     }
+    // `jobs.start()` has returned by now, so jobId is final. If the host
+    // invoked run() synchronously (the observed contract), pid is set too;
+    // otherwise the settle line still carries it. Either way the started line
+    // records the correlation keys without blocking the run.
+    writeLedgerStarted();
     return run;
   }
 }
