@@ -2,9 +2,3 @@
     - id: opencode-subagent
       name: '@local/dsh-opencode-subagent'
       config: {}
-    - id: tool-opencode-subagent
-      name: '@deepseek-ai/dsh-tool-subagent'
-      config:
-        provider: opencode
-        toolName: opencode_subagent
-        maxDepth: provider-managed

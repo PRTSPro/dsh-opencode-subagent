@@ -31,6 +31,7 @@ import {
   subprocessRunHandle,
 } from "@deepseek-ai/dsh-subagent";
 import { SessionId } from "@deepseek-ai/dsh-session";
+import { defineTool } from "@deepseek-ai/dsh-tools";
 
 /** Registry name of the provider this plugin contributes. */
 const PROVIDER_NAME = "opencode";
@@ -48,16 +49,17 @@ const MAX_STDERR_CHARS = 8192;
 
 export const name = "subagent-opencode";
 /**
- * The provider needs `subagents` (to register itself) and `subprocess` (to own
- * the `opencode serve` child). `jobs` is *not* declared here on purpose: the
- * Cordis inject dialect in this DSH line takes a plain service-name array, so
- * an object form would be read literally as two services named "required" and
+ * The provider needs `subagents` (to register itself), `tools` (to register the
+ * `opencode_subagent` delegation tool) and `subprocess` (to own the
+ * `opencode serve` child). `jobs` is *not* declared here on purpose: the Cordis
+ * inject dialect in this DSH line takes a plain service-name array, so an
+ * object form would be read literally as two services named "required" and
  * "optional" and the plugin would never activate. Instead the provider looks
  * the service up lazily (`ctx.get("jobs")`); when the host mounts it, a run
  * also publishes an observer-only job row (live progress/output/kill) in the
  * session header. Job output never enters the parent model's context.
  */
-export const inject = ["subagents", "subprocess"];
+export const inject = ["subagents", "subprocess", "tools"];
 
 export const Config = z.object({
   /** Explicit child environment overlay; values here survive the parent scrub. */
@@ -74,6 +76,12 @@ export const Config = z.object({
   turnTimeoutMs: z.number().default(900_000),
   /** Session title reported by OpenCode. */
   title: z.string().default("dsh-subagent-opencode"),
+  /**
+   * Name of the delegation tool this plugin registers. An empty string turns
+   * the built-in tool off (for hosts that wire the official
+   * `@deepseek-ai/dsh-tool-subagent` themselves instead).
+   */
+  toolName: z.string().default("opencode_subagent"),
 });
 
 /** ---------- small helpers ---------- */
@@ -103,6 +111,21 @@ function truncateDiagnostic(text) {
   return text.length > MAX_DIAGNOSTIC_CHARS
     ? `${text.slice(0, MAX_DIAGNOSTIC_CHARS)}\n[diagnostic truncated]`
     : text;
+}
+
+/** Model-facing text of one settled subagent result. */
+function resultText(result) {
+  const blocks = Array.isArray(result?.output) ? result.output : [];
+  const text = blocks
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+  if (text.length > 0) return text;
+  if (typeof result?.diagnostic === "string" && result.diagnostic.trim().length > 0) {
+    return result.diagnostic.trim();
+  }
+  return "(the OpenCode subagent returned no text)";
 }
 
 /** Bounded tail buffer: keeps the last N characters of a stream. */
@@ -727,6 +750,95 @@ class OpenCodeProvider {
   }
 }
 
+/**
+ * Register the model-facing delegation tool.
+ *
+ * Deliberately *not* `@deepseek-ai/dsh-tool-subagent`: that tool delegates with
+ * `delivery: 'parent'`, which always appends an external child to the parent's
+ * subagent catalog. External children have no local DSH session, so their
+ * catalog row can never be opened (the UI disables it on purpose) and a busy
+ * session fills the subagent panel with dead tabs. `delivery: 'caller'` skips
+ * the catalog entirely — the caller owns the result — so the only visible trace
+ * of a run is the observer-only job row published by the provider.
+ */
+function registerOpenCodeTool(ctx, config) {
+  const definition = defineTool({
+    name: config.toolName,
+    description:
+      "Delegate one task to an OpenCode subagent and wait for its final answer. "
+      + "The subagent runs in its own managed `opencode serve` process with the full OpenCode "
+      + "toolset (shell, file edits, search) rooted at `cwd`; live step/tool/text progress appears "
+      + "in a background job row. This tool is synchronous: its result is the child's final answer, "
+      + "so send one focused, self-contained task per call.",
+    parameters: {
+      description: {
+        type: "string",
+        required: true,
+        description:
+          "A short (3-5 word) description of the delegated task, for display. "
+          + "Use the language of the user's current request.",
+      },
+      prompt: {
+        type: "string",
+        required: true,
+        description:
+          "The complete, self-contained task for the OpenCode subagent. It does not share this "
+          + "conversation's context, so include everything it needs.",
+      },
+      cwd: {
+        type: "string",
+        description:
+          "Initial child working directory. Relative paths use your current directory; omitted "
+          + "inherits it. Later directory changes in either agent are independent.",
+      },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          text: { type: "string", required: true },
+          stop_reason: { type: "string", required: true },
+        },
+      },
+      render: (_args, value) => [{ type: "text", text: value.text }],
+    },
+    async execute(args, exec) {
+      const parent = exec.agent;
+      if (parent === undefined) {
+        throw new Error(`${PREFIX}: ${config.toolName} requires a calling agent`);
+      }
+      const started = await ctx.subagents.startActivation({
+        provider: PROVIDER_NAME,
+        label: args.description,
+        prompt: [{ type: "text", text: args.prompt }],
+        parent,
+        ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
+        signal: exec.signal,
+        delivery: "caller",
+      });
+      const dispose = () => {
+        Promise.resolve(started.dispose()).catch(() => {
+          // Teardown of a cancelled run is best-effort.
+        });
+      };
+      if (exec.signal.aborted) dispose();
+      else exec.signal.addEventListener("abort", dispose, { once: true });
+      try {
+        const result = await started.result;
+        return {
+          text: resultText(result),
+          stop_reason: String(result?.stopReason ?? "unknown"),
+        };
+      } finally {
+        exec.signal.removeEventListener("abort", dispose);
+      }
+    },
+  });
+  const unregister = ctx.tools.register(definition);
+  ctx.effect(() => unregister, `${PREFIX}.unregisterTool`);
+}
+
 export function apply(ctx, input = {}) {
   assertPositiveFinite(PREFIX, "disposeGraceMs", input.disposeGraceMs);
   assertPositiveFinite(PREFIX, "startupTimeoutMs", input.startupTimeoutMs);
@@ -738,4 +850,5 @@ export function apply(ctx, input = {}) {
   const provider = new OpenCodeProvider(ctx, input);
   const unregister = ctx.subagents.registerProvider(provider);
   ctx.effect(() => unregister, `${PREFIX}.unregisterProvider`);
+  if (input.toolName.length > 0) registerOpenCodeTool(ctx, input);
 }

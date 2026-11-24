@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "OpenCode Subagent",
-    "description": "OpenCode-backed DeepSeek Harness subagent provider, shaped like the official Codex and Claude Code providers: a managed opencode serve child process driven through OpenCode's v2 HTTP API with SSE step streaming."
+    "description": "OpenCode-backed DeepSeek Harness subagent provider, shaped like the official Codex and Claude Code providers: a managed opencode serve child process driven through OpenCode's v2 HTTP API with SSE step streaming. Ships its own synchronous opencode_subagent tool, so delegations never leave an unopenable tab in the subagent panel."
   }
 }

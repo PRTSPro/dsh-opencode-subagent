@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "OpenCode 子智能体",
-    "description": "以 OpenCode 为后端的 DeepSeek Harness 子智能体 provider，形态与官方 Codex / Claude Code provider 一致：受管启动 opencode serve 子进程，通过 OpenCode v2 HTTP API 驱动并以 SSE 流式回传步骤。"
+    "description": "以 OpenCode 为后端的 DeepSeek Harness 子智能体 provider，形态与官方 Codex / Claude Code provider 一致：受管启动 opencode serve 子进程，通过 OpenCode v2 HTTP API 驱动并以 SSE 流式回传步骤。插件自带同步的 opencode_subagent 工具，委托不会在「子智能体」面板留下打不开的标签。"
   }
 }
