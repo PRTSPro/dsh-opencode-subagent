@@ -46,6 +46,8 @@ const SERVE_ARGS = ["serve", "--port", "0", "--hostname", "127.0.0.1"];
 const MAX_DIAGNOSTIC_CHARS = 4096;
 const MAX_JOB_LINE_CHARS = 2000;
 const MAX_STDERR_CHARS = 8192;
+/** Placeholder result text for a turn that produced no assistant output. */
+const NO_TEXT_PLACEHOLDER = "(OpenCode produced no text output)";
 
 export const name = "subagent-opencode";
 /**
@@ -121,11 +123,16 @@ function resultText(result) {
     .map((block) => block.text)
     .join("\n")
     .trim();
-  if (text.length > 0) return text;
-  if (typeof result?.diagnostic === "string" && result.diagnostic.trim().length > 0) {
-    return result.diagnostic.trim();
+  const diagnostic = typeof result?.diagnostic === "string" ? result.diagnostic.trim() : "";
+  const stopReason = String(result?.stopReason ?? "unknown");
+  const hasRealText = text.length > 0 && text !== NO_TEXT_PLACEHOLDER;
+  // A failed run's placeholder text hides the actual reason (rate limit, auth,
+  // transport error), so prefer the diagnostic there.
+  if (stopReason !== "completed" && diagnostic.length > 0) {
+    return hasRealText ? `${text}\n\n[${stopReason}] ${diagnostic}` : diagnostic;
   }
-  return "(the OpenCode subagent returned no text)";
+  if (hasRealText) return text;
+  return NO_TEXT_PLACEHOLDER;
 }
 
 /** Bounded tail buffer: keeps the last N characters of a stream. */
@@ -568,7 +575,7 @@ async function startOpenCodeRun(request, spec, job) {
     for (const text of textByMessage.values()) {
       if (typeof text === "string" && text.trim().length > 0) last = text;
     }
-    return [{ type: "text", text: last.length > 0 ? last : "(OpenCode produced no text output)" }];
+    return [{ type: "text", text: last.length > 0 ? last : NO_TEXT_PLACEHOLDER }];
   };
   const diagnostic = () => {
     const parts = [];
