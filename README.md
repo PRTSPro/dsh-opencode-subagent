@@ -109,6 +109,13 @@ Passed through the bundle `config`:
 | `title` | `dsh-subagent-opencode` | Session title reported to OpenCode. |
 | `toolName` | `opencode_subagent` | Name of the delegation tool this plugin registers. `''` disables it (use the official wrapper instead). |
 
+### Concurrency and limits
+
+- DSH caps concurrent children per sub-agent tree root with `subagents.maxActiveSubagents` (default `8`; a profile can raise it, e.g. `20`). Exceeding it rejects the delegation immediately with `subagent limit reached (active child limit: N)`. This plugin adds no cap of its own.
+- Each in-flight delegation owns one managed `opencode serve` child: measured roughly **+1 process and +300 MB RSS per concurrent run** on Windows 11 / Node 24 / OpenCode 2.0.28, released again once the run settles (no growth across runs). Locally, concurrency is therefore RAM-bound.
+- The real wall sits upstream at the free tier: OpenCode's free pool is best-effort and rate-limits per client. Measured on one machine — 12 sequential runs at 3 s spacing: 9 ok / 3 failed; 4 parallel: 2 ok; 8 parallel: 3 ok. Failures arrive fast (~2 s) as `Free usage limit reached. Free models work in OpenCode ...` and the pool recovered within seconds in our runs. Switching to another free model did not help, so the throttle is per client, not per model.
+- Practical guidance: keep free-tier fan-out at ≤2 concurrent delegations; a burst of 4+ mostly hits the throttle. A paid provider or an OpenCode Go subscription removes it.
+
 ### Contract behavior
 
 - `capabilities` is `NO_START_CAPABILITIES` (all `false`) and `inheritsParentContext = false` — an out-of-process backend cannot honor parent-enforced start features.
@@ -246,6 +253,13 @@ plugin_manager install_bundle --target <本仓库路径>
 | `turnTimeoutMs` | `900000` | 一整轮未到达终结事件则判失败 |
 | `title` | `dsh-subagent-opencode` | 报给 OpenCode 的会话标题 |
 | `toolName` | `opencode_subagent` | 本插件注册的委托工具名。设为 `''` 则不注册（改回用官方包装） |
+
+### 并发与限流
+
+- DSH 侧对每个子代理树根有并发上限：`subagents.maxActiveSubagents`（默认 `8`，profile 可调高，例如 `20`）。超过时该次委托立刻被拒，报 `subagent limit reached (active child limit: N)`。本插件自己不设任何并发闸门。
+- 每一个在跑中的委托独占一个受管的 `opencode serve` 子进程：在 Windows 11 / Node 24 / OpenCode 2.0.28 上实测约 **+1 进程、+300 MB 常驻内存**，运行结束即回收（多轮不累积）。所以本机并发能力受内存约束。
+- 真正的墙在上游免费层：OpenCode 免费池是"尽力而为"，按客户端限流。单机实测——顺序 12 次（间隔 3 秒）：9 成 3 败；并发 4：2 成；并发 8：3 成。失败约 2 秒就返回 `Free usage limit reached. Free models work in OpenCode ...`，且数秒内即可恢复；换另一个免费模型同样失败，说明限流按客户端而非按模型。
+- 实用建议：免费层并发控制在 ≤2；4 以上大概率触发限流。换成付费 provider 或 OpenCode Go 订阅即可解除。
 
 ### 契约行为
 
