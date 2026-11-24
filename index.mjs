@@ -147,7 +147,7 @@ function raceDeadline(promise, ms, message) {
  * claude-code provider. The command travels through the environment (not the
  * argv tail), so no path or task text crosses a shell parsing boundary.
  */
-function opencodeSpawnSpec({ command, cwd, env, graceMs, startupTimeoutMs }) {
+function opencodeSpawnSpec({ command, cwd, env, graceMs }) {
   const dot = command.lastIndexOf(".");
   const extension = dot >= 0 ? command.slice(dot).toLowerCase() : "";
   const batchShim = process.platform === "win32" && (extension === ".cmd" || extension === ".bat");
@@ -156,12 +156,13 @@ function opencodeSpawnSpec({ command, cwd, env, graceMs, startupTimeoutMs }) {
     ? ["cmd.exe", "/d", "/v:off", "/s", "/c", `%${OPENCODE_EXECUTABLE_ENV}%`, ...SERVE_ARGS]
     : [command, ...SERVE_ARGS];
   if (batchShim) childEnv[OPENCODE_EXECUTABLE_ENV] = JSON.stringify(command);
+  // The spec matches `SubprocessSpawnSpec` exactly: readiness is bounded by the
+  // plugin's own raceDeadline, not by a (nonexistent) spawn-time option.
   return {
     argv,
     cwd,
     stdio: { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
     graceMs,
-    startupTimeoutMs,
     env: childEnv,
   };
 }
@@ -220,7 +221,6 @@ class OpenCodeServer {
       cwd: this.spec.cwd,
       env: this.spec.env,
       graceMs: this.spec.disposeGraceMs,
-      startupTimeoutMs: this.spec.startupTimeoutMs,
     });
     this.emit(`$ ${command} ${SERVE_ARGS.join(" ")}`);
     const child = this.spec.spawn(spawnSpec);
